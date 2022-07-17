@@ -1,3 +1,6 @@
 [submodule "esp-box"]
 	path = esp-box
 	url = https://github.com/espressif/esp-box.git
+[submodule "woody-opl"]
+	path = woody-opl
+	url = https://github.com/rofl0r/woody-opl.git
