@@ -62,6 +62,15 @@ void SinTest()
 
 void app_main(void)
 {
+   int WriteIdx = 0;
+   int ReadIdx = 0;
+   int SamplesAvailable = 0;
+   int Samples2Write;
+   size_t BytesWritten;
+   size_t SamplesWritten;
+   size_t Samples2Get;
+   esp_err_t Err;
+
    ESP_ERROR_CHECK(bsp_board_init());
    ESP_ERROR_CHECK(bsp_board_power_ctrl(POWER_MODULE_AUDIO, true));
 
@@ -72,14 +81,53 @@ void app_main(void)
    adlib_init(SAMPLING_RATE);
    LOG("Calling SinTest()\n");
    SinTest();
-// Init the sample buffer
-   LOG("Calling adlib_getsample()\n");
-   adlib_getsample(gAudioBuffer,AUDIO_BUF_LEN);
 
    LOG("Entering forever loop\n");
    while(true) {
-//      ESP_ERROR_CHECK(i2s_write(I2S_NUM_0,gAudioBuffer,sizeof(gAudioBuffer) output_size, &i2s_bytes_written, portMAX_DELAY);
+      if(SamplesAvailable < AUDIO_BUF_LEN) {
+         Samples2Get = AUDIO_BUF_LEN - SamplesAvailable;
+         if(WriteIdx + Samples2Get > AUDIO_BUF_LEN) {
+            Samples2Get = AUDIO_BUF_LEN - WriteIdx;
+         }
+//         LOG("Calling adlib_getsample for %d samples\n",Samples2Get);
+         adlib_getsample(&gAudioBuffer[WriteIdx],Samples2Get);
+         SamplesAvailable += Samples2Get;
+         WriteIdx += Samples2Get;
+         if(WriteIdx == AUDIO_BUF_LEN) {
+            WriteIdx = 0;
+         }
+         else if(WriteIdx > AUDIO_BUF_LEN) {
+            LOGE("Internal error\n");
+            break;
+         }
+      }
 
-      vTaskDelay(1);
+      Samples2Write = SamplesAvailable;
+      if(ReadIdx + Samples2Write > AUDIO_BUF_LEN) {
+         Samples2Write = AUDIO_BUF_LEN - ReadIdx;
+      }
+      Err = i2s_write(I2S_NUM_0,
+                      &gAudioBuffer[ReadIdx],
+                      Samples2Write * sizeof(uint16_t),
+                      &BytesWritten,0);
+      if(Err != ESP_OK) {
+         LOGE("i2s_write failed %d\n",Err);
+         break;
+      }
+
+      if(BytesWritten > 0) {
+         SamplesWritten = BytesWritten / sizeof(uint16_t);
+//         LOG("wrote %d samples\n",SamplesWritten);
+         SamplesAvailable -= SamplesWritten;
+         ReadIdx += SamplesWritten;
+         if(ReadIdx == AUDIO_BUF_LEN) {
+            ReadIdx = 0;
+         }
+         else if(ReadIdx > AUDIO_BUF_LEN) {
+            LOGE("Internal error\n");
+            break;
+         }
+      }
+//      vTaskDelay(1);
    }
 }
