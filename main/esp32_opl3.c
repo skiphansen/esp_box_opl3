@@ -1,3 +1,44 @@
+/*
+ *  Copyright (C) 2022  Skip Hansen
+ * 
+ *  This program is free software; you can redistribute it and/or modify it
+ *  under the terms and conditions of the GNU General Public License,
+ *  version 2, as published by the Free Software Foundation.
+ *
+ *  This program is distributed in the hope it will be useful, but WITHOUT
+ *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ *  more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+ *
+ *  Much of this code derived from Espressif Systems mp3_demo
+ *  (https://github.com/espressif/esp-box/tree/master/examples/mp3_demo)
+ *  with the following license:
+ *
+ 
+ * @file mp3_demo.c
+ * @brief 
+ * @version 0.1
+ * @date 2021-11-11
+ * 
+ * @copyright Copyright 2021 Espressif Systems (Shanghai) Co. Ltd.
+ *
+ *      Licensed under the Apache License, Version 2.0 (the "License");
+ *      you may not use this file except in compliance with the License.
+ *      You may obtain a copy of the License at
+ *
+ *               http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *      Unless required by applicable law or agreed to in writing, software
+ *      distributed under the License is distributed on an "AS IS" BASIS,
+ *      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *      See the License for the specific language governing permissions and
+ *      limitations under the License.
+ */
+
 #include "bsp_board.h"
 #include "bsp_storage.h"
 #include "bsp_i2s.h"
@@ -8,7 +49,7 @@
 #include "opl.h"
 #include "log.h"
 
-#define SAMPLING_RATE   44100
+#define SAMPLING_RATE   8000
 
 #define AUDIO_BUF_LEN   1024
 int16_t gAudioBuffer[AUDIO_BUF_LEN];
@@ -70,6 +111,8 @@ void app_main(void)
    size_t SamplesWritten;
    size_t Samples2Get;
    esp_err_t Err;
+   TickType_t CurrentTime;
+   int Ret;
 
    ESP_ERROR_CHECK(bsp_board_init());
    ESP_ERROR_CHECK(bsp_board_power_ctrl(POWER_MODULE_AUDIO, true));
@@ -82,14 +125,30 @@ void app_main(void)
    LOG("Calling SinTest()\n");
    SinTest();
 
+   CurrentTime = xTaskGetTickCount() * portTICK_RATE_MS;
+   int StartPlaying(char *Filename,long CurrentTime);
+   int OplEventPoll(long time_ctr);
+   LOG("StartPlaying returned %d\n",StartPlaying("/spiffs/doom_000.dro",CurrentTime));
+
    LOG("Entering forever loop\n");
    while(true) {
+      CurrentTime = xTaskGetTickCount() * portTICK_RATE_MS;
+#if 0
+      if(CurrentTime > 10000) {
+         LOG("Time's up!\n");
+         break;
+      }
+#endif
+      if(OplEventPoll(CurrentTime) == 0) {
+         LOG("EOF\n");
+         break;
+      }
+
       if(SamplesAvailable < AUDIO_BUF_LEN) {
          Samples2Get = AUDIO_BUF_LEN - SamplesAvailable;
          if(WriteIdx + Samples2Get > AUDIO_BUF_LEN) {
             Samples2Get = AUDIO_BUF_LEN - WriteIdx;
          }
-//         LOG("Calling adlib_getsample for %d samples\n",Samples2Get);
          adlib_getsample(&gAudioBuffer[WriteIdx],Samples2Get);
          SamplesAvailable += Samples2Get;
          WriteIdx += Samples2Get;
@@ -117,7 +176,6 @@ void app_main(void)
 
       if(BytesWritten > 0) {
          SamplesWritten = BytesWritten / sizeof(uint16_t);
-//         LOG("wrote %d samples\n",SamplesWritten);
          SamplesAvailable -= SamplesWritten;
          ReadIdx += SamplesWritten;
          if(ReadIdx == AUDIO_BUF_LEN) {
@@ -128,6 +186,6 @@ void app_main(void)
             break;
          }
       }
-//      vTaskDelay(1);
    }
 }
+

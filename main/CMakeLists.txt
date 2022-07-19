@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "esp32_opl3.c" "../woody-opl/opl.c"
+    SRCS "esp32_opl3.c" "../woody-opl/opl.c" "imfplay.c"
     INCLUDE_DIRS "../woody-opl"
 )
 
