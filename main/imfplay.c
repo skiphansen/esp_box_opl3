@@ -30,7 +30,15 @@ subject to the following restrictions:
 #include <stdlib.h>
 #include <string.h>
 #include "opl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_task.h"
 #include "log.h"
+
+#define IMF_TASK_MAIN_STACKSIZE  2048
+#define IMF_TASK_MAIN_STACK   (IMF_TASK_MAIN_STACKSIZE + TASK_EXTRA_STACK_SIZE)
+#define IMF_TASK_MAIN_PRIO    ESP_TASK_PRIO_MIN
 
 #define CMD_EOF               -1
 #define CMD_NULL           0     //no command
@@ -54,7 +62,7 @@ typedef enum {
 typedef struct {
    unsigned short reg;
    unsigned char data;
-   unsigned short delay;
+   unsigned short delay;   // in milliseconds
 } cmd;
 
 typedef struct {
@@ -62,7 +70,17 @@ typedef struct {
    filetype type;
 } fileinfo;
 
-fileinfo gFileinfo;
+typedef struct {
+   bool bPlay;
+   bool bPlaying;
+   bool bDelaying;
+   fileinfo Fileinfo;
+   esp_timer_handle_t WakeTmr;
+   int64_t NextEvent;
+   int64_t Epoc;
+} ImfPlayGlobals;
+
+ImfPlayGlobals gImfPlay;
 
 void opl2_out(unsigned char reg, unsigned char data)
 {
@@ -179,6 +197,7 @@ int read_next_cmd(fileinfo *fi, cmd *c)
                c->data = ri;
                return CMD_FULL;
          }
+         break;
 
       case FT_DRO2:
          c->reg = c->data = c->delay = 0;
@@ -288,45 +307,147 @@ void file_close(fileinfo *fi)
    fclose(fi->stream);
 }
 
-// CurrentTime = run time in 
-int StartPlaying(char *Filename,long CurrentTime)
+void ProcessFileData()
 {
-   if(!file_open(&gFileinfo,Filename))
-      return EXIT_FAILURE;
-
-   opl2_clear();
-
-   return 0;
-}
-
-// return 0 on EOF
-int OplEventPoll(long time_ctr)
-{
-   int run = 1;
    cmd c;
    int res;
-   static long next_event;
-   long Late;
+   int64_t WaitTime;
+   esp_err_t Err;
 
-
-   if(time_ctr >= next_event) do {
-      Late = time_ctr - next_event;
-      res = read_next_cmd(&gFileinfo, &c);
+   while(gImfPlay.bPlay) {
+      res = read_next_cmd(&gImfPlay.Fileinfo,&c);
       if(res == CMD_EOF) {
-         run = 0;
+         LOG("EOF\n");
+         gImfPlay.bPlaying = false;
          break;
       }
       if(res == CMD_FULL && !is_muted(c.reg)) {
          if(c.reg < 0x100) {
-            opl2_out(c.reg, c.data);
+            opl2_out(c.reg,c.data);
          }
       }
-      next_event = time_ctr + c.delay - Late;
-   } while(false);
-
-   return run;
+      if((res == CMD_FULL || res == CMD_DELAY_ONLY) && c.delay != 0) {
+      // Delay
+         gImfPlay.NextEvent = gImfPlay.Epoc + (c.delay * 1000);
+         WaitTime = gImfPlay.NextEvent-esp_timer_get_time();
+         if(WaitTime > 0) {
+            // LOG("Waiting %d\n",(int) WaitTime);
+            Err = esp_timer_start_once(gImfPlay.WakeTmr,WaitTime);
+            if(Err != ESP_OK) {
+               LOGE("esp_timer_start_once failed %d\n",Err);
+            }
+            break;
+         }
+         else if(WaitTime < -1000) {
+            LOG("Behind %d\n",(int) -WaitTime);
+         }
+      }
+   }
 }
 
+static void ImfWakeup(void *arg)
+{
+   int64_t Time2Event;
+
+   Time2Event = gImfPlay.NextEvent - esp_timer_get_time();
+   if(Time2Event > 0) {
+      LOGE("Internal error\n");
+   }
+   else if(gImfPlay.bPlay) {
+      if(Time2Event < -1000) {
+         LOG("Late %lld\n",-Time2Event);
+      }
+      gImfPlay.Epoc = gImfPlay.NextEvent;
+      ProcessFileData();
+   }
+   else {
+      LOG("Stop requested\n");
+      gImfPlay.bPlaying = false;
+   }
+}
+
+int ImfPlayInit()
+{
+   int Ret = EXIT_FAILURE;
+   esp_err_t Err;
+   esp_timer_create_args_t timer_cfg = {
+       .callback = ImfWakeup,
+       .dispatch_method = ESP_TIMER_TASK,
+       .name = "ImfWakeupTmr",
+   };
+
+   do {
+      if((Err = esp_timer_create(&timer_cfg,&gImfPlay.WakeTmr)) != ESP_OK) {
+         LOG("esp_timer_create failed %d\n",Err);
+         break;
+      }
+      gImfPlay.bPlay = true;
+      gImfPlay.bPlaying = true;
+      gImfPlay.bDelaying = false;
+      gImfPlay.Epoc = esp_timer_get_time();
+      ProcessFileData();
+      Ret = EXIT_SUCCESS;
+   } while(false);
+
+   return Ret;
+}
+
+void ImfPlayDeinit()
+{
+   esp_err_t Err;
+
+   if(gImfPlay.WakeTmr != NULL) {
+      if((Err = esp_timer_delete(gImfPlay.WakeTmr)) != ESP_OK) {
+         LOG("esp_timer_delete failed %d\n",Err);
+      }
+      gImfPlay.WakeTmr = NULL;
+   }
+
+   if(gImfPlay.Fileinfo.stream != NULL) {
+      fclose(gImfPlay.Fileinfo.stream);
+      gImfPlay.Fileinfo.stream = NULL;
+   }
+}
+
+int StartPlaying(char *Filename)
+{
+   int Ret;
+
+   if(!file_open(&gImfPlay.Fileinfo,Filename)) {
+      LOG("Couldn't open '%s'\n",Filename);
+      Ret = EXIT_FAILURE;
+   }
+   else {
+      opl2_clear();
+      Ret = ImfPlayInit();
+   }
+   return Ret;
+}
+
+bool ImfPlaying()
+{
+   return gImfPlay.bPlaying;
+}
+
+int StopPlaying()
+{
+   int Ret = EXIT_SUCCESS;
+
+   if(gImfPlay.bPlaying) {
+   // don't bother checking for errors, the timer might not be running
+      esp_timer_stop(gImfPlay.WakeTmr);
+      gImfPlay.bPlay = false;
+      if(gImfPlay.bPlaying) {
+         LOG("Error: imf_play_loop didn't stop\n");
+         Ret = EXIT_FAILURE;
+      }
+      else {
+         ImfPlayDeinit();
+      }
+   }
+
+   return Ret;
+}
 
 #if 0
 int main(int argc, char **argv)

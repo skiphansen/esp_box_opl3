@@ -50,9 +50,13 @@
 #include "log.h"
 
 #define SAMPLING_RATE   8000
+#define SIN_TEST_ONLY   0
 
 #define AUDIO_BUF_LEN   1024
 int16_t gAudioBuffer[AUDIO_BUF_LEN];
+
+int StartPlaying(char *Filename);
+bool ImfPlaying();
 
 // initialize OPL3 registers for a 1kHz sine wave
 struct {
@@ -113,6 +117,10 @@ void app_main(void)
    esp_err_t Err;
    TickType_t CurrentTime;
    int Ret;
+   int64_t StartTime;
+   int64_t DeltaTime;
+   int64_t TotalGenTime = 0;
+   int TotalSamples = 0;
 
    ESP_ERROR_CHECK(bsp_board_init());
    ESP_ERROR_CHECK(bsp_board_power_ctrl(POWER_MODULE_AUDIO, true));
@@ -122,34 +130,40 @@ void app_main(void)
    ESP_ERROR_CHECK(i2s_start(I2S_NUM_0));
    LOG("Calling adlib_init()\n");
    adlib_init(SAMPLING_RATE);
+#if SIN_TEST_ONLY == 1
    LOG("Calling SinTest()\n");
    SinTest();
-
+#else
    CurrentTime = xTaskGetTickCount() * portTICK_RATE_MS;
-   int StartPlaying(char *Filename,long CurrentTime);
-   int OplEventPoll(long time_ctr);
-   LOG("StartPlaying returned %d\n",StartPlaying("/spiffs/doom_000.dro",CurrentTime));
+   LOG("StartPlaying returned %d\n",StartPlaying("/spiffs/doom_000.dro"));
+#endif
 
    LOG("Entering forever loop\n");
    while(true) {
       CurrentTime = xTaskGetTickCount() * portTICK_RATE_MS;
-#if 0
-      if(CurrentTime > 10000) {
+#if SIN_TEST_ONLY == 1
+      if(CurrentTime > 5000) {
          LOG("Time's up!\n");
          break;
       }
-#endif
-      if(OplEventPoll(CurrentTime) == 0) {
-         LOG("EOF\n");
+#else
+      if(!ImfPlaying()) {
+         LOG("Playback complete\n");
          break;
       }
+#endif
 
-      if(SamplesAvailable < AUDIO_BUF_LEN) {
+      while(SamplesAvailable < AUDIO_BUF_LEN) {
          Samples2Get = AUDIO_BUF_LEN - SamplesAvailable;
          if(WriteIdx + Samples2Get > AUDIO_BUF_LEN) {
             Samples2Get = AUDIO_BUF_LEN - WriteIdx;
          }
+         StartTime = esp_timer_get_time();
          adlib_getsample(&gAudioBuffer[WriteIdx],Samples2Get);
+         DeltaTime = esp_timer_get_time() - StartTime;
+         TotalGenTime += DeltaTime;
+         TotalSamples += Samples2Get;
+
          SamplesAvailable += Samples2Get;
          WriteIdx += Samples2Get;
          if(WriteIdx == AUDIO_BUF_LEN) {
@@ -161,20 +175,22 @@ void app_main(void)
          }
       }
 
-      Samples2Write = SamplesAvailable;
-      if(ReadIdx + Samples2Write > AUDIO_BUF_LEN) {
-         Samples2Write = AUDIO_BUF_LEN - ReadIdx;
-      }
-      Err = i2s_write(I2S_NUM_0,
-                      &gAudioBuffer[ReadIdx],
-                      Samples2Write * sizeof(uint16_t),
-                      &BytesWritten,0);
-      if(Err != ESP_OK) {
-         LOGE("i2s_write failed %d\n",Err);
-         break;
-      }
+      while(true) {
+         if((Samples2Write = SamplesAvailable) == 0) {
+            break;
+         }
+         if(ReadIdx + Samples2Write > AUDIO_BUF_LEN) {
+            Samples2Write = AUDIO_BUF_LEN - ReadIdx;
+         }
+         Err = i2s_write(I2S_NUM_0,
+                         &gAudioBuffer[ReadIdx],
+                         Samples2Write * sizeof(uint16_t),
+                         &BytesWritten,portMAX_DELAY);
+         if(Err != ESP_OK) {
+            LOGE("i2s_write failed %d\n",Err);
+            break;
+         }
 
-      if(BytesWritten > 0) {
          SamplesWritten = BytesWritten / sizeof(uint16_t);
          SamplesAvailable -= SamplesWritten;
          ReadIdx += SamplesWritten;
@@ -187,5 +203,8 @@ void app_main(void)
          }
       }
    }
+   LOG("Generated %d samples in %lld microseconds\n",
+       TotalSamples,TotalGenTime);
+
 }
 
