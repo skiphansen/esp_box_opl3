@@ -27,7 +27,12 @@
  */
 
 
+#define FLTYPE_FLOAT
+#ifdef FLTYPE_FLOAT
+#define fltype float
+#else
 #define fltype double
+#endif
 
 /*
 	define Bits, Bitu, Bit32s, Bit32u, Bit16s, Bit16u, Bit8s, Bit8u here
@@ -197,7 +202,5 @@ void adlib_getsample(Bit16s* sndptr, Bits numsamples);
 
 Bitu adlib_reg_read(Bitu port);
 void adlib_write_index(Bitu port, Bit8u val);
-
-static Bit32u generator_add;	// should be a chip parameter
 
 #endif
